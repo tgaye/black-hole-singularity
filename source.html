@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Black Hole Singularity</title>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.8.0/lib/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #canvas-container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            position: relative;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            text-align: center;
+            width: 100%;
+            opacity: 0.7;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+
+<base target="_self">
+
+
+    <div id="canvas-container">
+        <div id="instructions">Drag to orbit • Scroll to zoom • Particles follow your cursor</div>
+    </div>
+
+    <script>
+        const sketch = (p) => {
+            let blackHole;
+            let particles = [];
+            let stars = [];
+            let bgStars = [];
+            let rotationX = 0;
+            let rotationY = 0;
+            let targetRotationX = 0;
+            let targetRotationY = 0;
+            let zoom = 500;
+            let targetZoom = 500;
+            let isDragging = false;
+            let lastX, lastY;
+            let audioContext;
+            let oscillator;
+            let gainNode;
+            let audioEnabled = false;
+            let distortion;
+            let lastParticleTime = 0;
+
+            p.setup = () => {
+                let canvas = p.createCanvas(p.min(p.windowWidth, 1200), p.min(p.windowHeight, 800), p.WEBGL);
+                canvas.parent('canvas-container');
+                p.colorMode(p.HSB, 360, 100, 100, 1);
+                
+                // Initialize hole
+                blackHole = {
+                    radius: 50,
+                    innerDiskRadius: 80,
+                    outerDiskRadius: 300,
+                    diskThickness: 20,
+                    rotationSpeed: 0.002,
+                    rotationAngle: 0
+                };
+
+                // Create background stars
+                for (let i = 0; i < 500; i++) {
+                    bgStars.push({
+                        x: p.random(-2000, 2000),
+                        y: p.random(-2000, 2000),
+                        z: p.random(-2000, 2000),
+                        size: p.random(0.5, 2),
+                        brightness: p.random(50, 100)
+                    });
+                }
+
+                // Create distant stars for lensing effect
+                for (let i = 0; i < 200; i++) {
+                    stars.push({
+                        x: p.random(-1000, 1000),
+                        y: p.random(-1000, 1000),
+                        z: p.random(-1500, -500),
+                        size: p.random(1, 3),
+                        originalSize: 0
+                    });
+                }
+
+                // Initialize audio context on first interaction
+                p.mousePressed = () => {
+                    if (!audioContext && audioEnabled) {
+                        initAudio();
+                    }
+                };
+            };
+
+            function initAudio() {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                gainNode = audioContext.createGain();
+                gainNode.gain.value = 0.1;
+                gainNode.connect(audioContext.destination);
+                
+                oscillator = audioContext.createOscillator();
+                oscillator.type = 'sine';
+                oscillator.frequency.value = 55;
+                oscillator.connect(gainNode);
+                oscillator.start();
+                
+                // Create subtle distortion
+                distortion = audioContext.createWaveShaper();
+                distortion.curve = makeDistortionCurve(20);
+                distortion.oversample = '4x';
+                oscillator.connect(distortion);
+                distortion.connect(gainNode);
+            }
+
+            function makeDistortionCurve(amount) {
+                let k = typeof amount === 'number' ? amount : 50;
+                let n_samples = 44100;
+                let curve = new Float32Array(n_samples);
+                let deg = Math.PI / 180;
+                
+                for (let i = 0; i < n_samples; ++i) {
+                    let x = i * 2 / n_samples - 1;
+                    curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+                }
+                return curve;
+            }
+
+            p.draw = () => {
+                p.background(0);
+                p.noStroke();
+                
+                // Smooth camera movements
+                rotationX = p.lerp(rotationX, targetRotationX, 0.1);
+                rotationY = p.lerp(rotationY, targetRotationY, 0.1);
+                zoom = p.lerp(zoom, targetZoom, 0.1);
+                
+                // Set camera position
+                p.rotateX(rotationX);
+                p.rotateY(rotationY);
+                
+                // Draw background stars (will be lensed)
+                drawBackgroundStars();
+                
+                // Draw accretion disk
+                drawAccretionDisk();
+                
+                // Draw black hole event horizon
+                drawEventHorizon();
+                
+                // Draw lensed stars
+                drawLensedStars();
+                
+                // Update and draw particles
+                updateParticles();
+                drawParticles();
+                
+                // Create new particles from mouse position
+                if (p.mouseX !== 0 && p.mouseY !== 0 && p.millis() - lastParticleTime > 30) {
+                    createParticlesFromMouse();
+                    lastParticleTime = p.millis();
+                }
+                
+                // Update audio if enabled
+                if (audioEnabled && oscillator) {
+                    updateAudio();
+                }
+            };
+
+            function drawBackgroundStars() {
+                p.push();
+                p.rotateX(p.PI); // Flip to match WEBGL coordinate system
+                
+                for (let star of bgStars) {
+                    let screenPos = getScreenPosition(star.x, star.y, star.z);
+                    let size = star.size * (1 + p.sin(p.frameCount * 0.01 + star.x) * 0.2);
+                    
+                    p.push();
+                    p.translate(star.x, star.y, star.z);
+                    p.emissiveMaterial(0, 0, star.brightness);
+                    p.sphere(size);
+                    p.pop();
+                }
+                p.pop();
+            }
+
+            function drawAccretionDisk() {
+                p.push();
+                p.rotateY(blackHole.rotationAngle);
+                blackHole.rotationAngle += blackHole.rotationSpeed;
+                
+                // Draw disk with gradient
+                for (let r = blackHole.innerDiskRadius; r < blackHole.outerDiskRadius; r += 5) {
+                    let hue = p.map(r, blackHole.innerDiskRadius, blackHole.outerDiskRadius, 270, 50);
+                    let brightness = p.map(r, blackHole.innerDiskRadius, blackHole.outerDiskRadius, 80, 100);
+                    let alpha = p.map(r, blackHole.innerDiskRadius, blackHole.outerDiskRadius, 0.8, 0.3);
+                    
+                    p.push();
+                    p.rotateY(p.PI/2);
+                    p.emissiveMaterial(hue, 90, brightness, alpha);
+                    p.torus(r, blackHole.diskThickness, 24, 16);
+                    p.pop();
+                }
+                
+                // Inner hot region
+                p.push();
+                p.emissiveMaterial(30, 100, 100, 0.5);
+                p.torus(blackHole.innerDiskRadius, blackHole.diskThickness * 1.5, 24, 16);
+                p.pop();
+                
+                p.pop();
+            }
+
+            function drawEventHorizon() {
+                p.push();
+                p.emissiveMaterial(0, 0, 0);
+                p.sphere(blackHole.radius);
+                
+                // Gravitational lensing effect
+                p.emissiveMaterial(200, 30, 30, 0.3);
+                p.sphere(blackHole.radius * 1.2);
+                p.pop();
+            }
+
+            function drawLensedStars() {
+                p.push();
+                p.rotateX(p.PI); // Flip to match WEBGL coordinate system
+                
+                for (let star of stars) {
+                    // Calculate gravitational lensing distortion
+                    let dx = star.x;
+                    let dy = star.y;
+                    let dz = star.z;
+                    let dist = p.sqrt(dx*dx + dy*dy + dz*dz);
+                    let gravityFactor = p.constrain(blackHole.radius * 100 / dist, 1, 10);
+                    
+                    // Apply distortion
+                    let distortedX = dx * gravityFactor;
+                    let distortedY = dy * gravityFactor;
+                    let distortedZ = dz * gravityFactor;
+                    
+                    // Calculate size based on distortion
+                    star.originalSize = star.originalSize || star.size;
+                    star.size = star.originalSize * gravityFactor * 0.5;
+                    
+                    p.push();
+                    p.translate(distortedX, distortedY, distortedZ);
+                    p.emissiveMaterial(60, 10, 100);
+                    p.sphere(star.size);
+                    p.pop();
+                }
+                p.pop();
+            }
+
+            function createParticlesFromMouse() {
+                // Convert mouse position to 3D space
+                let mouseX3D = p.map(p.mouseX, 0, p.width, -p.width/2, p.width/2);
+                let mouseY3D = p.map(p.mouseY, 0, p.height, -p.height/2, p.height/2);
+                
+                // Create particles at mouse position
+                for (let i = 0; i < 3; i++) {
+                    particles.push({
+                        x: mouseX3D + p.random(-20, 20),
+                        y: mouseY3D + p.random(-20, 20),
+                        z: 0,
+                        vx: p.random(-0.5, 0.5),
+                        vy: p.random(-0.5, 0.5),
+                        vz: p.random(-0.5, 0.5),
+                        size: p.random(2, 5),
+                        life: 100 + p.random(50),
+                        hue: p.random(180, 240)
+                    });
+                }
+            }
+
+            function updateParticles() {
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    let particle = particles[i];
+                    
+                    // Apply gravity toward black hole
+                    let dx = -particle.x;
+                    let dy = -particle.y;
+                    let dz = -particle.z;
+                    let dist = p.sqrt(dx*dx + dy*dy + dz*dz);
+                    
+                    let gravity = p.constrain(10000 / (dist * dist), 0, 10);
+                    
+                    particle.vx += dx / dist * gravity * 0.1;
+                    particle.vy += dy / dist * gravity * 0.1;
+                    particle.vz += dz / dist * gravity * 0.1;
+                    
+                    // Update position
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    particle.z += particle.vz;
+                    
+                    // Reduce life
+                    particle.life--;
+                    particle.size *= 0.99;
+                    
+                    // Remove dead particles
+                    if (particle.life <= 0 || dist < blackHole.radius) {
+                        particles.splice(i, 1);
+                    }
+                }
+            }
+
+            function drawParticles() {
+                p.push();
+                for (let particle of particles) {
+                    p.push();
+                    p.translate(particle.x, particle.y, particle.z);
+                    p.emissiveMaterial(particle.hue, 80, 100, particle.life / 150);
+                    p.sphere(particle.size);
+                    p.pop();
+                }
+                p.pop();
+            }
+
+            function updateAudio() {
+                if (!oscillator) return;
+                
+                // Calculate average particle velocity for audio effect
+                let avgSpeed = 0;
+                if (particles.length > 0) {
+                    let totalSpeed = 0;
+                    for (let particle of particles) {
+                        totalSpeed += p.sqrt(particle.vx*particle.vx + particle.vy*particle.vy + particle.vz*particle.vz);
+                    }
+                    avgSpeed = totalSpeed / particles.length;
+                }
+                
+                // Map to audio parameters
+                let baseFreq = 55 + avgSpeed * 50;
+                oscillator.frequency.setTargetAtTime(baseFreq, audioContext.currentTime, 0.1);
+                
+                // Add subtle noise based on particle count
+                let noiseAmount = p.constrain(particles.length / 50, 0, 0.3);
+                gainNode.gain.setTargetAtTime(0.1 + noiseAmount, audioContext.currentTime, 0.1);
+            }
+
+            function getScreenPosition(x, y, z) {
+                let screenX = x * zoom / (z + zoom);
+                let screenY = y * zoom / (z + zoom);
+                return { x: screenX, y: screenY };
+            }
+
+            p.mouseDragged = () => {
+                if (!isDragging) {
+                    isDragging = true;
+                    lastX = p.mouseX;
+                    lastY = p.mouseY;
+                }
+                
+                let dx = p.mouseX - lastX;
+                let dy = p.mouseY - lastY;
+                
+                targetRotationY += dx * 0.01;
+                targetRotationX += dy * 0.01;
+                
+                lastX = p.mouseX;
+                lastY = p.mouseY;
+            };
+
+            p.mouseReleased = () => {
+                isDragging = false;
+            };
+
+            p.mouseWheel = (event) => {
+                targetZoom += event.delta * 2;
+                targetZoom = p.constrain(targetZoom, 200, 1000);
+                return false;
+            };
+
+            p.windowResized = () => {
+                p.resizeCanvas(p.min(p.windowWidth, 1200), p.min(p.windowHeight, 800));
+            };
+
+            p.keyPressed = () => {
+                if (p.key === 'a' || p.key === 'A') {
+                    audioEnabled = !audioEnabled;
+                    if (audioEnabled && !audioContext) {
+                        initAudio();
+                    } else if (!audioEnabled && gainNode) {
+                        gainNode.gain.value = 0;
+                    }
+                }
+            };
+        };
+
+        new p5(sketch);
+    </script>
+
+              
+          
+                
+          
+              
